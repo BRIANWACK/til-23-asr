@@ -40,6 +40,7 @@ class VoiceExtractor(nn.Module):
         skip_demucs: bool = False,
         skip_denoise1: bool = False,
         use_ori: bool = False,
+        return_noise: bool = False,
         model=None,
     ):
         super(VoiceExtractor, self).__init__()
@@ -60,6 +61,7 @@ class VoiceExtractor(nn.Module):
         self.skip_demucs = skip_demucs
         self.skip_denoise1 = skip_denoise1
         self.use_ori = use_ori
+        self.return_noise = return_noise
 
     def _denoise1(
         self, wav: torch.Tensor, sr: int, noise: Optional[torch.Tensor] = None
@@ -96,8 +98,10 @@ class VoiceExtractor(nn.Module):
 
         ori_wav, ori_sr = wav, sr
         noise = None
+
         if not self.skip_demucs:
             wav, sr = self._demucs(wav, sr)
+
             # Use extracted voice sample to find noise sample.
             noisy = (
                 ori_wav
@@ -108,9 +112,13 @@ class VoiceExtractor(nn.Module):
                 resample(wav, orig_freq=sr, new_freq=ori_sr) if self.use_ori else wav
             )
             noise = noisy - voice
+
         if not self.skip_denoise1:
             if self.use_ori:
                 wav, sr = self._denoise1(ori_wav, ori_sr, noise)
             else:
                 wav, sr = self._denoise1(wav, sr, noise)
+
+        if self.return_noise:
+            return wav, sr, noise
         return wav, sr
