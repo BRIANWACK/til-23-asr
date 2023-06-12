@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "til-23-asr"
+version = "0.1.0"
+description = ""
+authors = ["John-Henry Lim <42513874+Interpause@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{include = "til_23_asr"}]
+
+[tool.poetry.dependencies]
+python = ">=3.8,<3.9"
+demucs = "^4.0.0"
+noisereduce = {git = "https://github.com/timsainb/noisereduce.git", rev = "57512ceac7672c8847beaa4654392977c6ea9d49"}
+openai-whisper = "^20230314"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
