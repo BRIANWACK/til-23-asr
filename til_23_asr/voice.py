@@ -21,6 +21,7 @@ BEST_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 def load_demucs_model(name=DEMUCS_MODEL, repo=DEMUCS_MODEL_REPO):
     """Load demucs model."""
+    torch.hub.set_dir("../models/demucs")
     return get_model(name=name, repo=repo)
 
 
