@@ -45,11 +45,6 @@ class VoiceExtractor(nn.Module):
         spectral_freq_mask_hz: Optional[int] = None,
         spectral_time_mask_ms: Optional[int] = None,
         demucs_shifts: int = 4,
-        skip_vol_norm: bool = False,
-        skip_demucs: bool = False,
-        skip_spectral: bool = False,
-        use_ori: bool = False,
-        return_noise: bool = False,
         model=None,
     ):
         """Initialize VoiceExtractor.
@@ -84,16 +79,6 @@ class VoiceExtractor(nn.Module):
             Time smoothing of mask to remove artifacts, by default None
         demucs_shifts : int, optional
             Number of random shifts to apply in `demucs`, by default 4
-        skip_vol_norm : bool, optional
-            Skip volume normalization for tuning purposes, by default False
-        skip_demucs : bool, optional
-            Skip usage of demucs for tuning purposes, by default False
-        skip_spectral : bool, optional
-            Skip usage of spectral gating for tuning purposes, by default False
-        use_ori : bool, optional
-            Apply spectral gating on original audio instead of `demucs`-ed audio, by default False
-        return_noise : bool, optional
-            Return the extracted noise sample for debug purposes, by default False
         model : Any, optional
             Alternative `demucs` model to use, by default None
         """
@@ -112,11 +97,6 @@ class VoiceExtractor(nn.Module):
             time_mask_smooth_ms=spectral_time_mask_ms,
         )
         self.demucs = load_demucs_model() if model is None else model
-        self.skip_vol_norm = skip_vol_norm
-        self.skip_demucs = skip_demucs
-        self.skip_spectral = skip_spectral
-        self.use_ori = use_ori
-        self.return_noise = return_noise
         self.demucs_shifts = demucs_shifts
 
     def _spectral(
@@ -148,21 +128,53 @@ class VoiceExtractor(nn.Module):
         return wav, self.demucs.samplerate
 
     @torch.inference_mode()
-    def forward(self, wav: torch.Tensor, sr: int):
-        """Extract voice from audio."""
+    def forward(
+        self,
+        wav: torch.Tensor,
+        sr: int,
+        skip_vol_norm: bool = False,
+        skip_demucs: bool = False,
+        skip_spectral: bool = False,
+        use_ori: bool = False,
+        return_noise: bool = False,
+    ):
+        """Extract voice from audio.
+
+        Parameters
+        ----------
+        wav : torch.Tensor
+            Input audio tensor of shape (T,).
+        sr : int
+            Input sampling rate.
+        skip_vol_norm : bool, optional
+            Skip volume normalization for tuning purposes, by default False
+        skip_demucs : bool, optional
+            Skip usage of demucs for tuning purposes, by default False
+        skip_spectral : bool, optional
+            Skip usage of spectral gating for tuning purposes, by default False
+        use_ori : bool, optional
+            Apply spectral gating on original audio instead of `demucs`-ed audio, by default False
+        return_noise : bool, optional
+            Return the extracted noise sample for debug purposes, by default False
+
+        Returns
+        -------
+        wav, sr : torch.Tensor, int
+            Extracted voice audio tensor of shape (T,) and sampling rate.
+        """
         assert len(wav.shape) == 1, "Input must be T."
 
-        if not self.skip_vol_norm:
+        if not skip_vol_norm:
             wav = normalize_volume(wav)
 
         ori_wav, ori_sr = wav, sr
         noise = None
 
-        if not self.skip_demucs:
+        if not skip_demucs:
             wav, sr = self._demucs(wav, sr)
 
             # Use extracted voice sample to find noise sample.
-            if self.use_ori:
+            if use_ori:
                 noisy = ori_wav
                 noise_sr = ori_sr
                 voice = resample(wav, orig_freq=sr, new_freq=ori_sr)
@@ -172,13 +184,13 @@ class VoiceExtractor(nn.Module):
                 voice = wav
             noise = noisy - voice
 
-        if not self.skip_spectral:
-            if self.use_ori:
+        if not skip_spectral:
+            if use_ori:
                 wav, sr = self._spectral(ori_wav, ori_sr, noise)
             else:
                 wav, sr = self._spectral(wav, sr, noise)
 
-        if self.return_noise:
+        if return_noise:
             if noise is None:
                 return wav, sr, wav
             noise = resample(noise, orig_freq=noise_sr, new_freq=sr)
