@@ -125,6 +125,7 @@ class VoiceExtractor(nn.Module):
         skip_vol_norm: bool = False,
         skip_df: bool = False,
         skip_spectral: bool = True,
+        spectral_first: bool = False,
         use_ori: bool = False,
         noise_removal_limit_db: float = 0,
         return_noise: bool = False,
@@ -143,8 +144,10 @@ class VoiceExtractor(nn.Module):
             Skip usage of DeepFilterNet for tuning purposes, by default False
         skip_spectral : bool, optional
             Skip usage of spectral gating for tuning purposes, by default True
+        spectral_first : bool, optional
+            Apply spectral gating before DeepFilterNet, by default False
         use_ori : bool, optional
-            Apply spectral gating on original audio, by default False
+            Use original audio as noise sample, by default False
         noise_removal_limit_db : float, optional
             Limit of noise to remove, by default 0
         return_noise : bool, optional
@@ -163,23 +166,22 @@ class VoiceExtractor(nn.Module):
         ori_wav, ori_sr = wav, sr
         noise = None
 
+        if not skip_spectral and spectral_first:
+            wav, sr = self._spectral(wav, sr, noise)
+
         if not skip_df:
             wav, sr = self._deepfilter(wav, sr, noise_removal_limit_db)
 
             # Use extracted voice sample to find noise sample.
-            if use_ori:
-                noisy = ori_wav
-                noise_sr = ori_sr
-                voice = resample(wav, orig_freq=sr, new_freq=ori_sr)
-            else:
+            if not spectral_first:
                 noisy = resample(ori_wav, orig_freq=ori_sr, new_freq=sr)
                 noise_sr = sr
                 voice = wav
-            noise = noisy - voice
+                noise = noisy - voice
 
-        if not skip_spectral:
+        if not skip_spectral and not spectral_first:
             if use_ori:
-                wav, sr = self._spectral(ori_wav, ori_sr, noise)
+                wav, sr = self._spectral(wav, sr, ori_wav)
             else:
                 wav, sr = self._spectral(wav, sr, noise)
 
