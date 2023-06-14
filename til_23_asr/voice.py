@@ -4,29 +4,21 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from demucs.apply import apply_model
-from demucs.pretrained import get_model
+from df.enhance import enhance, init_df
 from noisereduce.torchgate import TorchGate as TG
 from torchaudio.functional import resample
 
 __all__ = [
-    "load_demucs_model",
     "VoiceExtractor",
     "normalize_volume",
     "normalize_distribution",
 ]
 
-DEMUCS_MODEL = "htdemucs_ft"
-DEMUCS_MODEL_REPO = None
 
 # Competition audio files are 22050Hz.
 DEFAULT_SR = 22050
-BEST_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-
-def load_demucs_model(name=DEMUCS_MODEL, repo=DEMUCS_MODEL_REPO):
-    """Load demucs model."""
-    return get_model(name=name, repo=repo)
+# TODO: Implement Automatic Gain Control.
 
 
 def normalize_volume(wav: torch.Tensor):
@@ -46,14 +38,14 @@ class VoiceExtractor(nn.Module):
     # TODO: Expose below kwargs for tuning in the config file.
     def __init__(
         self,
+        model_dir: str,
         sr: int = DEFAULT_SR,
-        spectral_gate_std_thres: float = 1.0,
+        spectral_gate_std_thres: float = 1.5,
         spectral_noise_remove: float = 1.0,
         spectral_n_fft: int = 512,
         spectral_freq_mask_hz: Optional[int] = None,
         spectral_time_mask_ms: Optional[int] = None,
-        demucs_shifts: int = 4,
-        model=None,
+        df_post_filter: bool = False,
     ):
         """Initialize VoiceExtractor.
 
@@ -68,15 +60,14 @@ class VoiceExtractor(nn.Module):
         subtracting the extracted voice from the original audio. This approach has
         been observed to work well.
 
-        `demucs_shifts` improves the voice extraction quality at the cost of inference
-        time.
-
         Parameters
         ----------
+        model_dir : str
+            Path to DeepFilterNet model directory.
         sr : int, optional
             Input sampling rate, by default DEFAULT_SR
         spectral_gate_std_thres : float, optional
-            Standard deviation threshold for noise, by default 1.0
+            Standard deviation threshold for noise, by default 1.5
         spectral_noise_remove : float, optional
             Proportion of noise to remove, by default 1.0
         spectral_n_fft : int, optional
@@ -85,10 +76,8 @@ class VoiceExtractor(nn.Module):
             Frequency smoothing of mask to remove artifacts, by default None
         spectral_time_mask_ms : Optional[int], optional
             Time smoothing of mask to remove artifacts, by default None
-        demucs_shifts : int, optional
-            Number of random shifts to apply in `demucs`, by default 4
-        model : Any, optional
-            Alternative `demucs` model to use, by default None
+        df_post_filter : bool, optional
+            Apply DeepFilterNet post-filtering, by default False
         """
         super(VoiceExtractor, self).__init__()
         # See: https://github.com/timsainb/noisereduce.
@@ -104,8 +93,21 @@ class VoiceExtractor(nn.Module):
             freq_mask_smooth_hz=spectral_freq_mask_hz,
             time_mask_smooth_ms=spectral_time_mask_ms,
         )
-        self.demucs = load_demucs_model() if model is None else model
-        self.demucs_shifts = demucs_shifts
+        self.sr = sr
+        self.model, self.df_state, _ = init_df(
+            model_base_dir=model_dir, post_filter=df_post_filter, log_level="WARNING"
+        )
+
+    def _deepfilter(self, wav: torch.Tensor, sr: int, remove_limit_db: float = 0):
+        # Glitch with DeepFilterNet library means wav has to be on CPU first.
+        ori_device = wav.device
+        wav = resample(wav, orig_freq=sr, new_freq=self.df_state.sr())
+        wav = wav.to("cpu")[None]
+        # If `atten_lim_db` is set to 0, it will fully suppress the noise.
+        wav = enhance(
+            self.model, self.df_state, wav, atten_lim_db=remove_limit_db, pad=True
+        )
+        return wav[0].to(ori_device), self.df_state.sr()
 
     def _spectral(
         self, wav: torch.Tensor, sr: int, noise: Optional[torch.Tensor] = None
@@ -115,35 +117,16 @@ class VoiceExtractor(nn.Module):
         wav = self.spectral(wav[None], noise)[0]
         return wav, self.spectral.sr
 
-    def _demucs(self, wav: torch.Tensor, sr: int):
-        wav = resample(wav, orig_freq=sr, new_freq=self.demucs.samplerate)
-        wav = wav[None].expand(self.demucs.audio_channels, -1)
-        # Copied from `demucs.separate.main` (v4.0.0) to ensure correctness.
-        ref = wav.mean(0)
-        wav = (wav - ref.mean()) / ref.std()
-        sources = apply_model(
-            self.demucs,
-            wav[None],  # BCT
-            shifts=self.demucs_shifts,
-            split=True,
-            overlap=0.25,  # Applies only if split=True
-            progress=False,
-            num_workers=0,  # Ignored if GPU is used
-        )[0]
-        sources = sources * ref.std() + ref.mean()
-        wav = sources[self.demucs.sources.index("vocals")]
-        wav = wav.mean(0)
-        return wav, self.demucs.samplerate
-
     @torch.inference_mode()
     def forward(
         self,
         wav: torch.Tensor,
         sr: int,
         skip_vol_norm: bool = False,
-        skip_demucs: bool = False,
-        skip_spectral: bool = False,
+        skip_df: bool = False,
+        skip_spectral: bool = True,
         use_ori: bool = False,
+        noise_removal_limit_db: float = 0,
         return_noise: bool = False,
     ):
         """Extract voice from audio.
@@ -156,12 +139,14 @@ class VoiceExtractor(nn.Module):
             Input sampling rate.
         skip_vol_norm : bool, optional
             Skip volume normalization for tuning purposes, by default False
-        skip_demucs : bool, optional
-            Skip usage of demucs for tuning purposes, by default False
+        skip_df : bool, optional
+            Skip usage of DeepFilterNet for tuning purposes, by default False
         skip_spectral : bool, optional
-            Skip usage of spectral gating for tuning purposes, by default False
+            Skip usage of spectral gating for tuning purposes, by default True
         use_ori : bool, optional
-            Apply spectral gating on original audio instead of `demucs`-ed audio, by default False
+            Apply spectral gating on original audio, by default False
+        noise_removal_limit_db : float, optional
+            Limit of noise to remove, by default 0
         return_noise : bool, optional
             Return the extracted noise sample for debug purposes, by default False
 
@@ -178,8 +163,8 @@ class VoiceExtractor(nn.Module):
         ori_wav, ori_sr = wav, sr
         noise = None
 
-        if not skip_demucs:
-            wav, sr = self._demucs(wav, sr)
+        if not skip_df:
+            wav, sr = self._deepfilter(wav, sr, noise_removal_limit_db)
 
             # Use extracted voice sample to find noise sample.
             if use_ori:
@@ -198,9 +183,10 @@ class VoiceExtractor(nn.Module):
             else:
                 wav, sr = self._spectral(wav, sr, noise)
 
+        wav = resample(wav, orig_freq=sr, new_freq=self.sr)
         if return_noise:
             if noise is None:
-                return wav, sr, wav
-            noise = resample(noise, orig_freq=noise_sr, new_freq=sr)
-            return wav, sr, noise
-        return wav, sr
+                return wav, self.sr, wav
+            noise = resample(noise, orig_freq=noise_sr, new_freq=self.sr)
+            return wav, self.sr, noise
+        return wav, self.sr
