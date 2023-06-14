@@ -179,6 +179,8 @@ class VoiceExtractor(nn.Module):
                 wav, sr = self._spectral(wav, sr, noise)
 
         if self.return_noise:
+            if noise is None:
+                return wav, sr, wav
             noise = resample(noise, orig_freq=noise_sr, new_freq=sr)
             return wav, sr, noise
         return wav, sr
