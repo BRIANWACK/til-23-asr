@@ -24,6 +24,13 @@ def load_demucs_model(name=DEMUCS_MODEL, repo=DEMUCS_MODEL_REPO):
     return get_model(name=name, repo=repo)
 
 
+def normalize_volume(wav: torch.Tensor):
+    """Normalize volume."""
+    peak = wav.abs().max()
+    ratio = 1 / peak
+    return wav * ratio
+
+
 class VoiceExtractor(nn.Module):
     """Class to extract voice from audio tensor."""
 
@@ -38,6 +45,7 @@ class VoiceExtractor(nn.Module):
         spectral_freq_mask_hz: Optional[int] = None,
         spectral_time_mask_ms: Optional[int] = None,
         demucs_shifts: int = 4,
+        skip_vol_norm: bool = False,
         skip_demucs: bool = False,
         skip_spectral: bool = False,
         use_ori: bool = False,
@@ -76,6 +84,8 @@ class VoiceExtractor(nn.Module):
             Time smoothing of mask to remove artifacts, by default None
         demucs_shifts : int, optional
             Number of random shifts to apply in `demucs`, by default 4
+        skip_vol_norm : bool, optional
+            Skip volume normalization for tuning purposes, by default False
         skip_demucs : bool, optional
             Skip usage of demucs for tuning purposes, by default False
         skip_spectral : bool, optional
@@ -102,6 +112,7 @@ class VoiceExtractor(nn.Module):
             time_mask_smooth_ms=spectral_time_mask_ms,
         )
         self.demucs = load_demucs_model() if model is None else model
+        self.skip_vol_norm = skip_vol_norm
         self.skip_demucs = skip_demucs
         self.skip_spectral = skip_spectral
         self.use_ori = use_ori
@@ -140,6 +151,9 @@ class VoiceExtractor(nn.Module):
     def forward(self, wav: torch.Tensor, sr: int):
         """Extract voice from audio."""
         assert len(wav.shape) == 1, "Input must be T."
+
+        if not self.skip_vol_norm:
+            wav = normalize_volume(wav)
 
         ori_wav, ori_sr = wav, sr
         noise = None
