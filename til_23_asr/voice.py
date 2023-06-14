@@ -9,7 +9,12 @@ from demucs.pretrained import get_model
 from noisereduce.torchgate import TorchGate as TG
 from torchaudio.functional import resample
 
-__all__ = ["load_demucs_model", "VoiceExtractor"]
+__all__ = [
+    "load_demucs_model",
+    "VoiceExtractor",
+    "normalize_volume",
+    "normalize_distribution",
+]
 
 DEMUCS_MODEL = "htdemucs_ft"
 DEMUCS_MODEL_REPO = None
@@ -26,9 +31,12 @@ def load_demucs_model(name=DEMUCS_MODEL, repo=DEMUCS_MODEL_REPO):
 
 def normalize_volume(wav: torch.Tensor):
     """Normalize volume."""
-    peak = wav.abs().max()
-    ratio = 1 / peak
-    return wav * ratio
+    return wav / wav.abs().max()
+
+
+def normalize_distribution(wav: torch.Tensor):
+    """Normalize distribution."""
+    return (wav - wav.mean()) / wav.std()
 
 
 class VoiceExtractor(nn.Module):
