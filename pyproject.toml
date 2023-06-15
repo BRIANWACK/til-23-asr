@@ -11,6 +11,7 @@ python = ">=3.8,<3.9"
 noisereduce = {git = "https://github.com/timsainb/noisereduce.git", rev = "57512ceac7672c8847beaa4654392977c6ea9d49"}
 openai-whisper = "^20230314"
 deepfilternet = "^0.5.1"
+faster-whisper = "^0.6.0"
 
 [build-system]
 requires = ["poetry-core"]
